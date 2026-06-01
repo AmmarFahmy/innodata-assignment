@@ -34,6 +34,57 @@ class SpanValidationError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class RawError:
+    """Model-returned error referencing the original text by value, not offset."""
+    original: str
+    occurrence: int
+    type: str
+    correction: str
+    reason: str = ""
+
+
+def resolve_spans(paragraph: str, raw_errors: list[RawError]) -> list[ErrorSpan]:
+    """Convert (original, occurrence)-based errors into character-offset spans
+    by searching the paragraph. Skips errors whose `original` does not appear,
+    or whose Nth occurrence doesn't exist. Drops overlapping later spans.
+    Returns spans sorted by start offset.
+    """
+    candidates: list[ErrorSpan] = []
+    for e in raw_errors:
+        if not e.original:
+            continue
+        # Find the requested 1-based occurrence.
+        start = -1
+        search_from = 0
+        for _ in range(max(1, e.occurrence)):
+            start = paragraph.find(e.original, search_from)
+            if start == -1:
+                break
+            search_from = start + 1
+        if start == -1:
+            continue  # original text not found at requested occurrence; skip
+        candidates.append(
+            ErrorSpan(
+                start=start,
+                end=start + len(e.original),
+                type=e.type,
+                correction=e.correction,
+                reason=e.reason,
+            )
+        )
+    # Sort by start, then drop any spans that overlap a previously kept one.
+    candidates.sort(key=lambda s: (s.start, s.end))
+    kept: list[ErrorSpan] = []
+    cursor = 0
+    for s in candidates:
+        if s.start < cursor:
+            continue  # overlap; drop
+        kept.append(s)
+        cursor = s.end
+    return kept
+
+
 def validate_spans(original: str, spans: Iterable[ErrorSpan]) -> list[ErrorSpan]:
     """Sort spans, validate ranges, non-emptiness, and non-overlap."""
     cleaned = sorted(spans, key=lambda s: (s.start, s.end))

@@ -5,8 +5,10 @@ import pytest
 
 from proofread.apply_errors import (
     ErrorSpan,
+    RawError,
     SpanValidationError,
     apply,
+    resolve_spans,
     strip_error_tags,
 )
 
@@ -115,6 +117,42 @@ def test_adjacent_spans_allowed():
     ]
     out = apply(text, spans)
     _invariant(text, out)
+
+
+def test_resolve_spans_basic():
+    text = "The committe meets next wednesday."
+    raw = [
+        RawError("committe", 1, "spelling", "committee"),
+        RawError("wednesday", 1, "capitalization", "Wednesday"),
+    ]
+    spans = resolve_spans(text, raw)
+    assert [(s.start, s.end) for s in spans] == [(4, 12), (24, 33)]
+    out = apply(text, spans)
+    _invariant(text, out)
+
+
+def test_resolve_spans_missing_text_is_skipped():
+    text = "All correct here."
+    raw = [RawError("typo", 1, "spelling", "typed")]
+    assert resolve_spans(text, raw) == []
+
+
+def test_resolve_spans_occurrence_picks_second_match():
+    text = "the cat saw the cat run"
+    raw = [RawError("the cat", 2, "clarity", "another cat")]
+    spans = resolve_spans(text, raw)
+    assert [(s.start, s.end) for s in spans] == [(12, 19)]
+
+
+def test_resolve_spans_drops_overlapping():
+    text = "abcdef"
+    raw = [
+        RawError("abcd", 1, "spelling", "ABCD"),
+        RawError("cdef", 1, "spelling", "CDEF"),  # overlaps the first
+    ]
+    spans = resolve_spans(text, raw)
+    assert len(spans) == 1
+    assert (spans[0].start, spans[0].end) == (0, 4)
 
 
 def test_full_string_span():

@@ -64,7 +64,6 @@ input.
 | `OPENAI_API_KEY` | *(required)* | OpenAI API key. |
 | `OPENAI_MODEL` | `gpt-4.1-mini` | Model used for proofreading. |
 | `STYLE_GUIDE_PATH` | `proofread/style_guide.md` | Style guide injected into the system prompt. |
-| `MAX_CONCURRENCY` | `8` | Max simultaneous LLM requests across paragraphs. |
 
 ---
 
@@ -74,12 +73,20 @@ input.
    and CDATA.
 2. **Iterate `<p>` elements** in document order (any namespace). Empty or
    whitespace-only paragraphs are skipped.
-3. **One LLM call per paragraph**, run concurrently with an `asyncio`
-   semaphore (`MAX_CONCURRENCY`). The model is asked for **character-offset
-   spans**, not XML, via OpenAI's structured-output JSON schema.
-4. **Validate & apply spans deterministically** in `apply_errors.py`. The
-   `<error>` tags are spliced in by Python around `original[start:end]`, so
-   the text content is preserved by construction. A defensive check confirms
+3. **One batched LLM call for the whole document.** All paragraphs are sent
+   in a single request, keyed by integer index, and the model returns one
+   result entry per paragraph. This is N× faster than per-paragraph calls
+   and avoids tail-latency amplification (one slow request out of N would
+   dominate wall-clock time). The model returns each error by **quoting
+   the exact offending substring** (plus an `occurrence` index for
+   disambiguation) — never offsets, never XML — via OpenAI's structured-
+   output JSON schema. LLMs are reliable at quoting text and unreliable at
+   counting characters; we play to that strength. A retry kicks in if the
+   model skips any paragraph index.
+4. **Locate & apply spans deterministically** in `apply_errors.py`. We
+   `str.find` each quoted `original` in the paragraph to compute offsets,
+   drop any overlaps, then splice `<error>` tags in by Python — so the text
+   content is preserved by construction. A defensive check confirms
    `strip_error_tags(output) == original` for every paragraph.
 5. **Write** `<stem>.corrected.xml`.
 
@@ -113,9 +120,10 @@ tests/
   out-of-range spans twice in a row, the paragraph is left unchanged and a
   warning is logged.
 - **`--lang` is plumbed but tested only with `en`** on the provided samples.
-- **No batching of paragraphs into a single LLM call.** One paragraph per
-  call keeps prompts small, the length invariant trivial, and failures
-  isolated. Concurrency makes up for it.
+- **All paragraphs share one LLM call.** This keeps wall clock time low
+  and matches the "process with minimum time" requirement. The trade-off
+  is that a malformed batch response taints the whole run (mitigated by a
+  one-shot retry with explicit feedback).
 
 ## Notes on the length invariant
 
